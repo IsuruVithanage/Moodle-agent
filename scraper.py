@@ -1,141 +1,124 @@
-import requests
-from bs4 import BeautifulSoup
-from typing import List, Dict, Any
 import time
+from typing import List, Dict, Any
+from bs4 import BeautifulSoup
+
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
 
 
 class MoodleScraper:
-    """A class to handle Moodle login and calendar scraping."""
+    """A class to handle Moodle login and calendar scraping using Selenium."""
 
     def __init__(self, username: str, password: str, login_url: str, calendar_url: str):
         self.username = username
         self.password = password
         self.login_url = login_url
         self.calendar_url = calendar_url
-        self.session = requests.Session()
-        self.course_name_cache = {}
+
+        # Setup Selenium WebDriver
+        service = Service()  # Assumes chromedriver is in the same folder
+        options = webdriver.ChromeOptions()
+        # options.add_argument('--headless')  # Uncomment to run without opening a browser window
+        options.add_argument('--no-sandbox')
+        options.add_argument('--disable-dev-shm-usage')
+        self.driver = webdriver.Chrome(service=service, options=options)
+        print("✅ Selenium WebDriver initialized.")
 
     def login(self) -> bool:
-        # This method is working correctly and remains unchanged.
-        print("Attempting to log in...")
+        print("Attempting to log in using Selenium...")
         try:
-            login_page_response = self.session.get(self.login_url, timeout=15)
-            login_page_response.raise_for_status()
-            soup = BeautifulSoup(login_page_response.text, 'html.parser')
-            logintoken = soup.find('input', {'name': 'logintoken'})
-            if not logintoken: return False
-            logintoken_value = logintoken.get('value')
-            print(f"✅ Found logintoken.")
-            payload = {'username': self.username, 'password': self.password, 'logintoken': logintoken_value}
-            login_response = self.session.post(self.login_url, data=payload, timeout=15)
-            login_response.raise_for_status()
-            if 'login/logout.php' in login_response.text:
-                print("✅ Login successful!")
-                return True
-            else:
-                print("❌ Login failed. Please check your credentials in config.ini.")
-                return False
-        except requests.exceptions.RequestException as e:
-            print(f"❌ An error occurred during login: {e}")
+            self.driver.get(self.login_url)
+            # Find username/password fields and login button, then interact
+            self.driver.find_element(By.ID, 'username').send_keys(self.username)
+            self.driver.find_element(By.ID, 'password').send_keys(self.password)
+            self.driver.find_element(By.ID, 'loginbtn').click()
+
+            # Wait until the dashboard page loads by checking for the user menu
+            WebDriverWait(self.driver, 15).until(
+                EC.presence_of_element_located((By.ID, 'user-menu-toggle'))
+            )
+            print("✅ Login successful!")
+            return True
+        except Exception as e:
+            print(f"❌ An error occurred during Selenium login: {e}")
+            self.driver.quit()
             return False
 
-    # FINAL CORRECTED METHOD
-    def _scrape_event_details(self, event_url: str) -> Dict[str, str]:
+    def get_calendar_events_with_details(self) -> List[Dict[str, Any]]:
         """
-        Visits a single event URL and scrapes additional details robustly.
+        Fetches calendar, clicks each event, and scrapes details from the pop-up modal.
         """
-        # FIX #1: Added 'event_type' back to prevent the KeyError
-        details = {
-            'full_due_date': 'N/A',
-            'course_name': 'N/A',
-            'description': 'N/A',
-            'event_type': 'Course Event'  # Set a default value
-        }
         try:
-            response = self.session.get(event_url, timeout=15)
-            response.raise_for_status()
-            soup = BeautifulSoup(response.text, 'html.parser')
+            print(f"Navigating to calendar: {self.calendar_url}")
+            self.driver.get(self.calendar_url)
 
-            # --- 1. Get Full Course Name (with Caching) --- (This part works well)
-            nav_breadcrumb = soup.find('nav', {'aria-label': 'Navigation bar'})
-            if nav_breadcrumb:
-                breadcrumb_links = nav_breadcrumb.find_all('a')
-                if len(breadcrumb_links) > 1:
-                    course_link_tag = breadcrumb_links[-2]
-                    course_url = course_link_tag['href']
-                    if course_url in self.course_name_cache:
-                        details['course_name'] = self.course_name_cache[course_url]
-                    else:
-                        print(f"      -> First time seeing this course. Fetching full name...")
-                        course_page_res = self.session.get(course_url, timeout=15)
-                        course_soup = BeautifulSoup(course_page_res.text, 'html.parser')
-                        course_header = course_soup.find('div', class_='page-header-headings')
-                        if course_header and course_header.find('h1'):
-                            full_name = course_header.find('h1').get_text(strip=True)
-                            details['course_name'] = full_name
-                            self.course_name_cache[course_url] = full_name
+            # Wait for the calendar to be present
+            WebDriverWait(self.driver, 15).until(
+                EC.presence_of_element_located((By.CLASS_NAME, 'calendarmonth'))
+            )
+            time.sleep(2)  # Extra wait for all events to render
 
-            # --- 2. Get Full Due Date (FIX #2: More Robust Method) ---
-            # Search for the table containing submission info by looking for the "Submission status" header
-            submission_status_header = soup.find('th', string=lambda text: text and 'submission status' in text.lower())
-            if submission_status_header:
-                submission_table = submission_status_header.find_parent('table')
-                if submission_table:
-                    due_date_header = submission_table.find('th',
-                                                            string=lambda text: text and 'due date' in text.lower())
-                    if due_date_header:
-                        date_cell = due_date_header.find_next_sibling('td')
-                        if date_cell:
-                            details['full_due_date'] = date_cell.get_text(strip=True)
+            event_links = self.driver.find_elements(By.CSS_SELECTOR,
+                                                    'li[data-region="event-item"] a[data-action="view-event"]')
+            num_events = len(event_links)
+            print(f"Found {num_events} total events. Fetching details one by one...")
 
-            # --- 3. Get Activity Description/Title (This part works well) ---
-            main_content = soup.find('div', {'role': 'main'})
-            if main_content and main_content.find('h2'):
-                details['description'] = main_content.find('h2').get_text(strip=True)
+            all_events_data = []
 
-            # Add a generic link back to the event page
-            details['submission_link'] = event_url
+            for i in range(num_events):
+                # We must re-find the links each time because the page can change after a modal closes
+                events_to_click = self.driver.find_elements(By.CSS_SELECTOR,
+                                                            'li[data-region="event-item"] a[data-action="view-event"]')
+                link = events_to_click[i]
+                event_name = link.text
+                print(f"  ({i + 1}/{num_events}) Clicking: '{event_name}'")
 
-            return details
+                link.click()
+
+                # Wait for the modal pop-up to be visible
+                modal_wait = WebDriverWait(self.driver, 10)
+                modal_dialog = modal_wait.until(
+                    EC.visibility_of_element_located((By.CSS_SELECTOR, 'div.modal-dialog[data-region="modal"]'))
+                )
+
+                # Get the HTML of the modal and parse with BeautifulSoup
+                modal_html = modal_dialog.get_attribute('innerHTML')
+                soup = BeautifulSoup(modal_html, 'html.parser')
+
+                # --- Scrape data from the modal using the correct selectors ---
+                details = {}
+                clock_icon = soup.find('i', class_='fa-clock')
+                if clock_icon:
+                    date_div = clock_icon.find_parent('div', class_='row').find('div', class_='col-11')
+                    details['full_due_date'] = date_div.get_text(strip=True, separator=' ') if date_div else 'N/A'
+
+                course_icon = soup.find('i', class_='fa-graduation-cap')
+                if course_icon:
+                    course_div = course_icon.find_parent('div', class_='row').find('div', class_='col-11')
+                    details['course_name'] = course_div.get_text(strip=True) if course_div else 'N/A'
+
+                # Add other details
+                details['name'] = event_name
+                details['url'] = link.get_attribute('href')
+
+                all_events_data.append(details)
+
+                # Close the modal
+                close_button = self.driver.find_element(By.CSS_SELECTOR, 'button.btn-close[data-action="hide"]')
+                close_button.click()
+
+                # Wait for modal to disappear
+                modal_wait.until(EC.invisibility_of_element(modal_dialog))
+                time.sleep(1)  # Small delay for stability
+
+            print(f"✅ Finished scraping details for {len(all_events_data)} events.")
+            self.driver.quit()
+            return all_events_data
 
         except Exception as e:
-            print(f"      -> Warning: An error occurred scraping details for {event_url}. Error: {e}")
-            return details
-
-    def get_calendar_events(self) -> List[Dict[str, Any]]:
-        # This method's logic remains unchanged.
-        print(f"Fetching calendar data from: {self.calendar_url}")
-        try:
-            calendar_response = self.session.get(self.calendar_url, timeout=15)
-            calendar_response.raise_for_status()
-            soup = BeautifulSoup(calendar_response.text, 'html.parser')
-            month_header = soup.find('h2', class_='current')
-            current_month_year = month_header.get_text(strip=True) if month_header else "Unknown Month"
-            upcoming_events = []
-            calendar_table = soup.find('table', class_='calendarmonth')
-            if not calendar_table: return []
-            days_with_events = calendar_table.find_all('td', class_='hasevent')
-            all_event_items = []
-            for day_cell in days_with_events:
-                day_number = day_cell.get('data-day')
-                date_str = f"{current_month_year}, Day {day_number}"
-                events_on_day = day_cell.find_all('li', {'data-region': 'event-item'})
-                for event_item in events_on_day:
-                    all_event_items.append({'date_str': date_str, 'item': event_item})
-            print(f"Found {len(all_event_items)} total events. Fetching details...")
-            for idx, event_info in enumerate(all_event_items):
-                event_item = event_info['item']
-                date_str = event_info['date_str']
-                event_link_tag = event_item.find('a', {'data-action': 'view-event'})
-                if event_link_tag:
-                    event_name = event_link_tag.find('span', class_='eventname').get_text(strip=True)
-                    event_url = event_link_tag['href']
-                    print(f"  ({idx + 1}/{len(all_event_items)}) Scraping: '{event_name}'")
-                    details = self._scrape_event_details(event_url)
-                    upcoming_events.append({'date': date_str, 'name': event_name, 'url': event_url, **details})
-                    time.sleep(0.5)
-            print(f"✅ Finished scraping details for {len(upcoming_events)} events.")
-            return upcoming_events
-        except Exception as e:
-            print(f"❌ An error occurred during the process. Details: {e}")
+            print(f"❌ An error occurred during scraping: {e}")
+            self.driver.quit()
             return []

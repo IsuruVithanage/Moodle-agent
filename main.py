@@ -4,7 +4,7 @@ from scraper import MoodleScraper
 
 def main():
     """
-    Main function to run the Moodle agent.
+    Main function to run the Moodle agent using Selenium.
     """
     config = configparser.ConfigParser()
     config.read('config.ini')
@@ -22,33 +22,20 @@ def main():
         print("Error: Please replace the placeholder credentials in config.ini.")
         return
 
+    # Initialize and run the scraper
     scraper = MoodleScraper(username, password, login_url, calendar_url)
 
     if scraper.login():
-        events = scraper.get_calendar_events()
+        events = scraper.get_calendar_events_with_details()
 
         if events:
-            print("\n--- ✅ Your Detailed Moodle Calendar Summary ---")
-            current_date = None
+            print("\n--- ✅ Your Final Detailed Moodle Summary ---")
             for event in events:
-                # Group events by the day
-                if event['date'] != current_date:
-                    # FIX: Clean up the date string for printing
-                    clean_date = event['date'].replace(', Day', '')
-                    print(f"\n🗓️  {clean_date}")
-                    current_date = event['date']
-
-                # Print the detailed information
                 print(f"  -------------------------------------------")
-                print(f"  📌 Event:     {event['name']}")
-                print(f"  🎓 Course:    {event['course_name']}")
-                print(f"  🕒 Due:       {event['full_due_date']}")
-                print(f"  ℹ️  Type:      {event['event_type']}")
-                print(f"  📝 Details:   {event['description']}")
-                print(f"  🔗 Link:      {event['url']}")  # Changed to use the main URL
-
-        else:
-            print("\nCould not find any events for the current month.")
+                print(f"  📌 Event:     {event.get('name', 'N/A')}")
+                print(f"  🎓 Course:    {event.get('course_name', 'N/A')}")
+                print(f"  🕒 Due:       {event.get('full_due_date', 'N/A')}")
+                print(f"  🔗 Link:      {event.get('url', 'N/A')}")
 
 
 if __name__ == "__main__":
